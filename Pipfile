@@ -6,6 +6,7 @@ name = "pypi"
 [packages]
 pandas = "*"
 numpy = "*"
+datetime = "*"
 
 [dev-packages]
 
