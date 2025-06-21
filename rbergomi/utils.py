@@ -63,3 +63,28 @@ def bsinv(P, F, K, t, o = 'call'):
         return bs(F, K, s**2 * t, o) - P
     s = brentq(error, 1e-9, 1e+9)
     return s
+
+def generate_rDonsker_Y(N, H, T, n):
+    """
+    Generates N paths of the Volterra process Y_t using rDonsker method.
+    H is the Hurst parameter (H = a + 0.5), T is total time, n is steps/year.
+    """
+    
+    dt = T / n
+    t_grid = np.linspace(0, T, n + 1)
+    s = len(t_grid)
+
+    # Construct covariance matrix for fractional Brownian motion
+    def fBM_cov(H, t_grid):
+        return 0.5 * (np.abs(t_grid[:, None])**(2 * H) +
+                      np.abs(t_grid[None, :])**(2 * H) -
+                      np.abs(t_grid[:, None] - t_grid[None, :])**(2 * H))
+
+    cov_matrix = fBM_cov(H, t_grid)
+    L = np.linalg.cholesky(cov_matrix + 1e-10 * np.eye(s))  # Stability jitter
+
+    # Generate Brownian paths and transform
+    Z = np.random.randn(N, s)
+    Y = Z @ L.T  # Shape: (N, s)
+
+    return Y
