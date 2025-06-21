@@ -2,6 +2,7 @@ import numpy as np
 from utils import *
 import matplotlib.pyplot as plt
 import time
+from matplotlib.font_manager import FontProperties
 
 
 class rBergomi(object):
@@ -93,15 +94,22 @@ class rBergomi(object):
         dB = rho * dW1[:, :, 0] + np.sqrt(1 - rho**2) * dW2
         return dB
 
-    def V(self, Y, xi=1.0, eta=1.0):
+    def V(self, Y, xi, eta=1.0):
         """
-        rBergomi variance process.
+        rBergomi variance process with piecewise constant or flat xi(t).
         """
-        self.xi = xi
         self.eta = eta
         a = self.a
-        t = self.t
-        V = xi * np.exp(eta * Y - 0.5 * eta**2 * t**(2 * a + 1))
+
+        if np.isscalar(xi):
+            xi_t = xi * np.ones_like(self.t)
+        elif isinstance(xi, (list, np.ndarray)) and len(xi) < self.s:
+            nodes = np.linspace(0, self.T, len(xi))
+            xi_t = np.interp(self.t[0], nodes, xi)[np.newaxis, :]
+        else:
+            xi_t = np.array(xi)[np.newaxis, :]
+
+        V = xi_t * np.exp(eta * Y - 0.5 * eta**2 * self.t**(2 * a + 1))
         return V
 
     def S(self, V, dB, S0=1):
@@ -143,22 +151,30 @@ class rBergomi(object):
 
 
 if __name__ == "__main__":
-    # Example usage
+    # example usage
     start_time = time.time()
-    model = rBergomi(n=100, N=50, T=1.0, a=-0.4, method='rdonsker')
+    model = rBergomi(n=100, N=100, T=1.0, a=-0.4, method='hybrid')
     dW1 = model.dW1()
     Y = model.Y(dW1)
     dW2 = model.dW2()
     dB = model.dB(dW1, dW2, rho=0.0)
-    V = model.V(Y)
+    xi_piecewise = np.random.uniform(0.01, 0.1, 8)
+    V = model.V(Y, xi_piecewise)
     S = model.S(V, dB)
     diff = time.time() - start_time
-    print(
-        f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
+    print(f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
     print("Generated paths for rBergomi model:")
     print(S)
-
+    font = FontProperties(family='Times New Roman')
     plt.figure(figsize=(10, 6))
+    plt.title('rBergomi Paths', fontproperties=font)
+    plt.xlabel('Time', fontproperties=font)
+    plt.ylabel('Price', fontproperties=font)
+    plt.text(0.5, 0.95, f'Time taken: {diff} seconds',
+             horizontalalignment='left',
+             fontproperties=font,
+             verticalalignment='bottom',
+             transform=plt.gca().transAxes)
     for i in range(model.N):
         plt.plot(model.t[0], S[i], label=f'rBergomi Path{i}')
     plt.show()
