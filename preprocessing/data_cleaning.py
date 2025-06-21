@@ -16,7 +16,7 @@ def merge_data(path:str):
         dfs.append(df)
 
     merged_df = pd.concat(dfs, ignore_index=True)
-    merged_df.to_csv('merged_data', index=False)
+    merged_df.to_csv('merged_data.csv', index=False)
 
 if __name__ == "__main__":
     merge_data(str(Path(__file__).parent.parent) + '/data')

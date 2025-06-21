@@ -34,7 +34,7 @@ def pull_data_binance(start_date: date, end_date: date):
 
 
 if __name__ == "__main__":
-    start_date = date(2023, 9, 8)
-    end_date = date(2023, 9, 18)
-    # pull_data_binance(start_date, end_date)
+    start_date = date(2019, 9, 8)
+    end_date = date(2010, 9, 18)
+    pull_data_binance(start_date, end_date)
    
