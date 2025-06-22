@@ -64,7 +64,7 @@ def bsinv(P, F, K, t, o = 'call'):
     s = brentq(error, 1e-9, 1e+9)
     return s
 
-def generate_rDonsker_Y(N, H, T, n):
+def generate_rDonsker_Y_cholesky(N, H, T, n): # taken from Horvath et al. 2017b 
     """
     Generates N paths of the Volterra process Y_t using rDonsker method.
     H is the Hurst parameter (H = a + 0.5), T is total time, n is steps/year.
@@ -89,13 +89,61 @@ def generate_rDonsker_Y(N, H, T, n):
 
     return Y
 
-    import numpy as np
 
-def generate_piecewise_forward_variance(T=1.0, n=100, num_segments=8):
+def generate_rDonsker_Y_optimal(N, H, T, n, kernel="optimal"):
+    """
+    Generates N paths of the Volterra process Y_t using the rDonsker method. CFR Horvath et al. 2017b.
+    
+    Parameters:
+        N : int
+            Number of paths
+        H : float
+            Hurst parameter (H = a + 0.5)
+        T : float
+            Time horizon
+        n : int
+            Number of time steps
+        kernel : str
+            'optimal' (moment-matching) or 'naive' (left-point approximation)
+    
+    Returns:
+        Y : ndarray
+            Simulated Volterra process paths of shape (N, n+1)
+    """
+    dt = T / n
+    i = np.arange(1, n + 1)  # start from 1 to avoid 0^x
+
+    # Step 1: Compute kernel weights
+    if kernel == "optimal":
+        opt_k = np.power((np.power(i,2*H)-np.power(i-1.,2*H))/2.0/H,0.5)
+    elif kernel == "naive":
+        opt_k = np.power(i,H-0.5)
+    else:
+        raise ValueError("Invalid kernel choice. Use 'optimal' or 'naive'.")
+
+    # generate brownian motions
+    dW = np.sqrt(dt) * np.random.randn(N, n)
+
+    # Step 3: Convolve and construct the fractional process
+    Y = np.zeros((N, n + 1))  # +1 to include t=0
+    for j in range(N):
+        conv = np.convolve(opt_k, dW[j])[:n]  # truncate to n points
+        Y[j, 1:] = conv  # leave Y[:, 0] = 0 for t = 0
+
+    # Step 4: Apply fractional Brownian motion scaling
+    return Y * T**H
+
+
+
+def generate_piecewise_forward_variance(T=1.0, n=100, num_segments=8, xi_pieces=None):
     t_grid = np.linspace(0, T, num_segments + 1)
-    xi_pieces = np.random.uniform(0.01, 0.16, num_segments)
 
-    # Interpolate over full time grid using actual model resolution
+    if xi_pieces is None:
+        xi_pieces = np.random.uniform(0.01, 0.16, num_segments)
+    else:
+        xi_pieces = np.array(xi_pieces)
+
+    # Interpolate over the full time grid
     t_full = np.linspace(0, T, int(T * n) + 1)
     xi_curve = np.zeros_like(t_full)
 
@@ -104,6 +152,7 @@ def generate_piecewise_forward_variance(T=1.0, n=100, num_segments=8):
         end = np.searchsorted(t_full, t_grid[i + 1]) if i < num_segments - 1 else len(t_full)
         xi_curve[start:end] = xi_pieces[i]
 
-    return xi_curve[np.newaxis, :], t_full, xi_pieces
+    return xi_curve, t_full, xi_pieces
+
 
 

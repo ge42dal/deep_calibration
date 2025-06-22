@@ -1,5 +1,5 @@
 import numpy as np
-from utils import *
+from utils import g, b, cov, generate_piecewise_forward_variance, generate_rDonsker_Y_optimal, generate_rDonsker_Y_cholesky
 import matplotlib.pyplot as plt
 import time
 from matplotlib.font_manager import FontProperties
@@ -74,7 +74,7 @@ class rBergomi(object):
         elif self.method == 'rdonsker':
             # Generate paths using rDonsker method
             H = self.a + 0.5
-            Y = generate_rDonsker_Y(self.N, H, self.T, self.n)
+            Y = generate_rDonsker_Y_cholesky(self.N, H, self.T, self.n)
             return Y
         else:
             raise ValueError("Method must be either 'hybrid' or 'rdonsker'.")
@@ -165,34 +165,93 @@ class rBergomi(object):
 
 
 if __name__ == "__main__":
-    # example usage
-    start_time = time.time()
-    model = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='hybrid')
-    dW1 = model.dW1()
-    Y = model.Y(dW1)
-    dW2 = model.dW2()
-    dB = model.dB(dW1, dW2, rho=0.0)
-    xi_curve, t_grid, xi_pieces = generate_piecewise_forward_variance(T=model.T, n=model.n)
-    plt.figure(figsize=(10, 6))
-    plt.plot(xi_curve[0], label='Forward Variance Curve')
-    V = model.V(Y, xi_curve)
-    S = model.S(V, dB)
-    diff = time.time() - start_time
-    print(f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
-    print("Generated paths for rBergomi model:")
-    print(S)
+    
+    # example usage # rdonsker 
+    start_time_donsker = time.time()
+    model_rdonsker = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='rdonsker')
+    dW1 = model_rdonsker.dW1()
+    Y_donsker = model_rdonsker.Y(dW1)
+    dW2 = model_rdonsker.dW2()
+    dB = model_rdonsker.dB(dW1, dW2, rho=0.0)
+    xi_curve, t_grid, xi_pieces = generate_piecewise_forward_variance(T=model_rdonsker.T, n=model_rdonsker.n)
+    V_donsker = model_rdonsker.V(Y_donsker, xi_curve)
+    S_donsker = model_rdonsker.S(V_donsker, dB)
+    diff_donsker = time.time() - start_time_donsker
+    print(f"%--------------- time: %s seconds ---------------%{diff_donsker}")
+
+    start_time_hybrid = time.time()
+    model_hybrid = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='hybrid')
+    Y_hybrid = model_hybrid.Y(dW1)
+    V_hybrid = model_rdonsker.V(Y_hybrid, xi_curve)
+    S_hybrid = model_rdonsker.S(V_hybrid, dB)
+    diff_hybrid = time.time() - start_time_hybrid
+    print(f"%--------------- time: %s seconds ---------------%{diff_hybrid}")
     font = FontProperties(family='Times New Roman')
+
+    # diff = time.time() - start_time
+    # print(f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
+    # print("Generated paths for rBergomi model:")
+    # print(S)
+     # asset path hybrid 
     plt.figure(figsize=(10, 6))
-    plt.title('rBergomi Paths', fontproperties=font)
+    plt.title('rBergomi Asset Paths Hybrid', fontproperties=font, fontsize=14)
     plt.xlabel('Time', fontproperties=font)
     plt.ylabel('Price', fontproperties=font)
-    plt.text(0.5, 0.95, f'Time taken: {diff} seconds',
+    plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
+        horizontalalignment='left',
+        fontproperties=font,
+        verticalalignment='bottom',
+        transform=plt.gca().transAxes)
+
+    for i in range(model_hybrid.N):
+        plt.plot(model_hybrid.t[0], S_hybrid[i], label=f'rBergomi Path{i}')
+    
+    # variance path hybrid
+
+    plt.figure(figsize=(10, 6))
+    plt.title('rBergomi Variance Paths Hybrid', fontproperties=font, fontsize=14)
+    plt.xlabel('Time', fontproperties=font)
+    plt.ylabel('Var', fontproperties=font)
+    plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
+        horizontalalignment='left',
+        fontproperties=font,
+        verticalalignment='bottom',
+        transform=plt.gca().transAxes)
+
+    for i in range(model_hybrid.N):
+        plt.plot(model_hybrid.t[0], V_hybrid[i], label=f'rBergomi Path{i}')
+        
+    plt.figure(figsize=(10, 6))
+    plt.title('rBergomi Asset Paths rdonsker', fontproperties=font, fontsize=14)
+    plt.xlabel('Time', fontproperties=font)
+    plt.ylabel('Price', fontproperties=font)
+    plt.text(0.5, 0.95, f'Time taken: {diff_donsker} seconds',
              horizontalalignment='left',
              fontproperties=font,
              verticalalignment='bottom',
              transform=plt.gca().transAxes)
+
+    for i in range(model_rdonsker.N):
+        plt.plot(model_rdonsker.t[0], S_donsker[i], label=f'rBergomi Path{i}')
     
-    for i in range(model.N):
-        plt.plot(model.t[0], S[i], label=f'rBergomi Path{i}')
+    # variance path donsker
+
+    plt.figure(figsize=(10, 6))
+    plt.title('rBergomi Variance Paths rDonsker', fontproperties=font, fontsize=14)
+    plt.xlabel('Time', fontproperties=font)
+    plt.ylabel('Var', fontproperties=font)
+    plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
+        horizontalalignment='left',
+        fontproperties=font,
+        verticalalignment='bottom',
+        transform=plt.gca().transAxes)
+
+    for i in range(model_hybrid.N):
+        plt.plot(model_hybrid.t[0], V_donsker[i], label=f'rBergomi Path{i}')
+    
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(xi_curve, label='Forward Variance Curve')
+    plt.title(f'Piecewise Forward Variance Curve, T={model_rdonsker.T}, n={model_rdonsker.n}', fontsize=14, fontproperties=font)
     plt.show()
 
