@@ -96,18 +96,32 @@ class rBergomi(object):
 
     def V(self, Y, xi, eta=1.0):
         """
-        rBergomi variance process with piecewise constant or flat xi(t).
+        rBergomi variance process with support for scalar, 1D, or full 2D xi(t)
         """
         self.eta = eta
         a = self.a
 
         if np.isscalar(xi):
+            # Constant forward variance
             xi_t = xi * np.ones_like(self.t)
-        elif isinstance(xi, (list, np.ndarray)) and len(xi) < self.s:
-            nodes = np.linspace(0, self.T, len(xi))
-            xi_t = np.interp(self.t[0], nodes, xi)[np.newaxis, :]
+
+        elif isinstance(xi, (list, np.ndarray)):
+            xi = np.array(xi)
+            if xi.ndim == 1:
+                if len(xi) < self.s: # shorter xi -> interpolate
+                    nodes = np.linspace(0, self.T, len(xi))
+                    xi_t = np.interp(self.t[0], nodes, xi)[np.newaxis, :]
+                elif xi.shape == self.t.shape[1:] or xi.shape == self.t[0].shape:
+                    # direct match with model discretisation (n_steps+1,) -> reshape
+                    xi_t = xi[np.newaxis, :]
+                else:
+                    raise ValueError("Invalid 1D xi shape.")
+            elif xi.shape == self.t.shape:
+                xi_t = xi
+            else:
+                raise ValueError("Invalid shape for xi. Expected scalar, 1D, or matching self.t.")
         else:
-            xi_t = np.array(xi)[np.newaxis, :]
+            raise TypeError("xi must be a scalar, list, or numpy array.")
 
         V = xi_t * np.exp(eta * Y - 0.5 * eta**2 * self.t**(2 * a + 1))
         return V
@@ -145,21 +159,23 @@ class rBergomi(object):
         integral = np.cumsum(increments, axis=1)
 
         S = np.zeros_like(V)
-        S[:, 0] = S0
-        S[:, 1:] = S0 * np.exp(integral)
+        S[:, 0] = S0 
+        S[:, 1:] = S0 * np.exp(integral) # Spot martingale condition -> risk-neutrality
         return S
 
 
 if __name__ == "__main__":
     # example usage
     start_time = time.time()
-    model = rBergomi(n=100, N=100, T=1.0, a=-0.4, method='hybrid')
+    model = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='hybrid')
     dW1 = model.dW1()
     Y = model.Y(dW1)
     dW2 = model.dW2()
     dB = model.dB(dW1, dW2, rho=0.0)
-    xi_piecewise = np.random.uniform(0.01, 0.1, 8)
-    V = model.V(Y, xi_piecewise)
+    xi_curve, t_grid, xi_pieces = generate_piecewise_forward_variance(T=model.T, n=model.n)
+    plt.figure(figsize=(10, 6))
+    plt.plot(xi_curve[0], label='Forward Variance Curve')
+    V = model.V(Y, xi_curve)
     S = model.S(V, dB)
     diff = time.time() - start_time
     print(f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
@@ -175,6 +191,8 @@ if __name__ == "__main__":
              fontproperties=font,
              verticalalignment='bottom',
              transform=plt.gca().transAxes)
+    
     for i in range(model.N):
         plt.plot(model.t[0], S[i], label=f'rBergomi Path{i}')
     plt.show()
+

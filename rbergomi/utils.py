@@ -88,3 +88,22 @@ def generate_rDonsker_Y(N, H, T, n):
     Y = Z @ L.T  # Shape: (N, s)
 
     return Y
+
+    import numpy as np
+
+def generate_piecewise_forward_variance(T=1.0, n=100, num_segments=8):
+    t_grid = np.linspace(0, T, num_segments + 1)
+    xi_pieces = np.random.uniform(0.01, 0.16, num_segments)
+
+    # Interpolate over full time grid using actual model resolution
+    t_full = np.linspace(0, T, int(T * n) + 1)
+    xi_curve = np.zeros_like(t_full)
+
+    for i in range(num_segments):
+        start = np.searchsorted(t_full, t_grid[i])
+        end = np.searchsorted(t_full, t_grid[i + 1]) if i < num_segments - 1 else len(t_full)
+        xi_curve[start:end] = xi_pieces[i]
+
+    return xi_curve[np.newaxis, :], t_full, xi_pieces
+
+
