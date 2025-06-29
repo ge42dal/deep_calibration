@@ -1,11 +1,12 @@
 import numpy as np
 import os 
 from utils import g, b, cov, generate_piecewise_forward_variance, generate_rDonsker_Y_cholesky, bsinv
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 #import time
-#from matplotlib.font_manager import FontProperties
+from matplotlib.font_manager import FontProperties
 import pandas as pd
-
+import re
+import glob
 
 class rBergomi(object):
     """
@@ -169,7 +170,9 @@ class rBergomi(object):
         return S
 
 def simulate_one(args):
-    i, method, n_paths, n_steps, T = args
+    i, method, n_paths, n_steps, T, xi_pieces = args
+    np.random.seed(i + 12345)
+
 
     # Sample model parameters
     xi_pieces = np.random.uniform(0.01, 0.16, 8)
@@ -178,10 +181,15 @@ def simulate_one(args):
     H = np.random.uniform(0.025, 0.5)
     a = H - 0.5
 
-    # Forward variance curve using utils
+    # fixed parameters for testing
+    # nu = 1.5
+    # rho = -0.7
+    # H = 0.1
+    # a = H - 0.5
+
     xi_curve, _, _ = generate_piecewise_forward_variance(
-        T=T, n=n_steps, num_segments=8, xi_pieces=xi_pieces
-    )
+    T=T, n=n_steps, num_segments=8, xi_pieces=xi_pieces)
+
 
     # rBergomi simulation
     model = rBergomi(n=n_steps, N=n_paths, T=T, a=a, method=method)
@@ -193,8 +201,12 @@ def simulate_one(args):
     S = model.S(V, dB)
 
     # Time/maturity setup
+    # smaller qty maturities for testing
+    #maturities = [0.3, 0.6, 1.2, 2.0]
     maturities = [0.1, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.0]
     strikes = np.round(np.linspace(0.5, 1.5, 11), 2)
+    # smaller qty strikes for testing 
+    #strikes = [0.7, 0.9, 1.0, 1.1, 1.3]
     t_grid = model.t[0]
     maturity_indices = [np.searchsorted(t_grid, t) for t in maturities]
 
@@ -223,136 +235,243 @@ def simulate_one(args):
 
 
     
-def run_simulation_batch(method='hybrid', n_param=80000, n_paths=60000, n_steps=252, T=2.0, output_dir='results'):
+def run_simulation_batch(method='hybrid', n_param=500, n_paths=2000, n_steps=100,
+                         T=2.0, output_dir='results', xi_pieces=None, output_file=None):
     import numpy as np
     import pandas as pd
     import os
     from tqdm import tqdm
-    import multiprocessing as mp
+    from multiprocessing import Pool, cpu_count, Manager
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Prepare argument list for parallel calls
-    args_list = [(i, method, n_paths, n_steps, T) for i in range(n_param)]
+    args_list = [(i, method, n_paths, n_steps, T, xi_pieces) for i in range(n_param)]
 
-    # Parallel execution
-    with mp.Pool(processes=mp.cpu_count()) as pool:
-        results = list(tqdm(pool.imap(simulate_one, args_list), total=n_param))
+    # Shared progress bar
+    with Manager() as manager:
+        pbar = tqdm(total=n_param)
+        lock = manager.Lock()
 
-    # Flatten and save
+        def update_progress(_):
+            with lock:
+                pbar.update()
+
+        with Pool(processes=cpu_count()) as pool:
+            results = []
+            for args in args_list:
+                res = pool.apply_async(simulate_one, args=(args,), callback=update_progress)
+                results.append(res)
+
+            # Wait for all
+            results = [r.get() for r in results]
+
+        pbar.close()
+
     df = pd.DataFrame(results)
-    df.to_parquet(os.path.join(output_dir, f'simulated_paths_{method}.parquet'))
 
-    print(f"Saved {n_param} simulations using method '{method}' to {output_dir}/")
+    if output_file is None:
+        output_file = f'simulated_paths_{method}.parquet'
 
+    df.to_parquet(os.path.join(output_dir, output_file))
+    print(f"Saved {n_param} simulations using method '{method}' to {output_dir}/{output_file}")
 
+def analyze_variance_decay(path_root='results/var_decay', method='hybrid', strikes=None, maturities=None):
+    """
+    Analyzes variance of implied vols across different path counts for given method.
+    """
+
+    files = sorted([f for f in os.listdir(path_root) if f.startswith(f'sim_{method}_npaths')])
+    data = {}
+
+    for f in files:
+        match = re.search(r"npaths(\d+)", f)
+        if match:
+            path_count = int(match.group(1))
+        else:
+            continue
+        df = pd.read_parquet(os.path.join(path_root, f))
+
+        # Focus on IV columns only
+        iv_cols = [col for col in df.columns if col.startswith('iv_')]
+        if strikes or maturities:
+            iv_cols = [
+                c for c in iv_cols if any(f"K{strike:.2f}" in c for strike in strikes)
+                and any(f"T{maturity:.1f}" in c for maturity in maturities)
+            ]
+        iv_std = df[iv_cols].std().mean()
+        data[path_count] = iv_std
+
+    # Plot
+    plt.figure(figsize=(8, 5))
+    x, y = zip(*sorted(data.items()))
+    plt.plot(x, y, marker='o')
+    plt.xlabel('Number of Paths')
+    plt.ylabel('Avg Std of Implied Vols')
+    plt.title(f'Variance Decay of Implied Vols ({method} method)')
+    plt.grid(True)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":
+    for i in range(8):  # 8 batches × 10k = 80k total
+        np.random.seed(1234 + i)  # Unique seed per batch
+        output_name = f'sim_hybrid_batch{i}.parquet'
+        print(f"Running batch {i+1}/8 with seed {1234 + i}")
+        run_simulation_batch(
+            method='hybrid',
+            n_param=10000,
+            n_paths=60000,
+            n_steps=252,
+            T=2.0,
+            output_dir='results/full_sim',
+            output_file=output_name
+        )
 
-    run_simulation_batch(method='hybrid')
+    all_batches = sorted(glob.glob('results/full_sim/sim_hybrid_batch*.parquet'))
+    all_dfs = [pd.read_parquet(f) for f in all_batches]
+    combined_hybrid = pd.concat(all_dfs, ignore_index=True)
+    combined_hybrid.to_parquet('results/full_sim/sim_hybrid_all.parquet')
 
-    run_simulation_batch(method='rdonsker')
-    hybrid_sim = pd.read_parquet('results/simulated_paths_hybrid.parquet')
-    rdonsker_sim = pd.read_parquet('results/simulated_paths_rdonsker.parquet')
-    rdonsker_sim.to_csv('results/simulated_paths_rdonsker.csv', index=False)
-    hybrid_sim.to_csv('results/simulated_paths_hybrid.csv', index=False)
+    for i in range(8):  # 8 batches × 10k = 80k total
+        np.random.seed(1234 + i)  # Unique seed per batch
+        output_name = f'sim_rdonsker_batch{i}.parquet'
+        print(f"Running batch {i+1}/8 with seed {1234 + i}")
+        run_simulation_batch(
+            method='rdonsker',
+            n_param=10000,
+            n_paths=60000,
+            n_steps=252,
+            T=2.0,
+            output_dir='results/full_sim',
+            output_file=output_name
+        )
 
-    print(hybrid_sim.head())
-    print(rdonsker_sim.head())
+    all_batches = sorted(glob.glob('results/full_sim/sim_rdonsker_batch*.parquet'))
+    all_dfs = [pd.read_parquet(f) for f in all_batches]
+    combined_donsker = pd.concat(all_dfs, ignore_index=True)
+    combined_donsker.to_parquet('results/full_sim/sim_rdonsker_all.parquet')
+    
+
+    # np.random.seed(42)
+    # # Variance decay simulations
+    # output_dir = 'results/var_decay'
+    # os.makedirs(output_dir, exist_ok=True)
+
+    # for n_paths in [500, 1000, 2000, 5000]:
+    #     run_simulation_batch(method='hybrid', n_param=250, n_paths=n_paths, output_dir=output_dir)
+    #     # Rename output file to capture n_paths
+    #     old_path = os.path.join(output_dir, f'simulated_paths_hybrid.parquet')
+    #     new_path = os.path.join(output_dir, f'sim_hybrid_npaths{n_paths}.parquet')
+    #     os.rename(old_path, new_path)
+
+    # # Analyze and visualize variance decay
+    # analyze_variance_decay(path_root=output_dir)
+
+    # for n_paths in [500, 1000, 2000, 5000]:
+    #     run_simulation_batch(method='rdonsker', n_param=250, n_paths=n_paths, output_dir=output_dir)
+    #     # Rename output file to capture n_paths
+    #     old_path = os.path.join(output_dir, f'simulated_paths_rdonsker.parquet')
+    #     new_path = os.path.join(output_dir, f'sim_rdonsker_npaths{n_paths}.parquet')
+    #     os.rename(old_path, new_path)
+
+    # analyze_variance_decay(method='rdonsker', path_root=output_dir)
+
 
 
 
 
 
     
-    # # example usage # rdonsker 
-    # start_time_donsker = time.time()
-    # model_rdonsker = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='rdonsker')
-    # dW1 = model_rdonsker.dW1()
-    # Y_donsker = model_rdonsker.Y(dW1)
-    # dW2 = model_rdonsker.dW2()
-    # dB = model_rdonsker.dB(dW1, dW2, rho=0.0)
-    # xi_curve, t_grid, xi_pieces = generate_piecewise_forward_variance(T=model_rdonsker.T, n=model_rdonsker.n)
-    # V_donsker = model_rdonsker.V(Y_donsker, xi_curve)
-    # S_donsker = model_rdonsker.S(V_donsker, dB)
-    # diff_donsker = time.time() - start_time_donsker
-    # print(f"%--------------- time: %s seconds ---------------%{diff_donsker}")
+    # # # example usage # rdonsker 
+    # # start_time_donsker = time.time()
+    # # model_rdonsker = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='rdonsker')
+    # # dW1 = model_rdonsker.dW1()
+    # # Y_donsker = model_rdonsker.Y(dW1)
+    # # dW2 = model_rdonsker.dW2()
+    # # dB = model_rdonsker.dB(dW1, dW2, rho=0.0)
+    # # xi_curve, t_grid, xi_pieces = generate_piecewise_forward_variance(T=model_rdonsker.T, n=model_rdonsker.n)
+    # # V_donsker = model_rdonsker.V(Y_donsker, xi_curve)
+    # # S_donsker = model_rdonsker.S(V_donsker, dB)
+    # # diff_donsker = time.time() - start_time_donsker
+    # # print(f"%--------------- time: %s seconds ---------------%{diff_donsker}")
 
-    # start_time_hybrid = time.time()
-    # model_hybrid = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='hybrid')
-    # Y_hybrid = model_hybrid.Y(dW1)
-    # V_hybrid = model_rdonsker.V(Y_hybrid, xi_curve)
-    # S_hybrid = model_rdonsker.S(V_hybrid, dB)
-    # diff_hybrid = time.time() - start_time_hybrid
-    # print(f"%--------------- time: %s seconds ---------------%{diff_hybrid}")
-    # font = FontProperties(family='Times New Roman')
+    # # start_time_hybrid = time.time()
+    # # model_hybrid = rBergomi(n=252, N=10000, T=1.0, a=-0.4, method='hybrid')
+    # # Y_hybrid = model_hybrid.Y(dW1)
+    # # V_hybrid = model_rdonsker.V(Y_hybrid, xi_curve)
+    # # S_hybrid = model_rdonsker.S(V_hybrid, dB)
+    # # diff_hybrid = time.time() - start_time_hybrid
+    # # print(f"%--------------- time: %s seconds ---------------%{diff_hybrid}")
+    # # font = FontProperties(family='Times New Roman')
 
-    # # diff = time.time() - start_time
-    # # print(f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
-    # # print("Generated paths for rBergomi model:")
-    # # print(S)
-    #  # asset path hybrid 
-    # plt.figure(figsize=(10, 6))
-    # plt.title('rBergomi Asset Paths Hybrid', fontproperties=font, fontsize=14)
-    # plt.xlabel('Time', fontproperties=font)
-    # plt.ylabel('Price', fontproperties=font)
-    # plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
-    #     horizontalalignment='left',
-    #     fontproperties=font,
-    #     verticalalignment='bottom',
-    #     transform=plt.gca().transAxes)
+    # # # diff = time.time() - start_time
+    # # # print(f"%--------------- time: %s seconds ---------------%{time.time() - start_time}")
+    # # # print("Generated paths for rBergomi model:")
+    # # # print(S)
+    # #  # asset path hybrid 
+    # # plt.figure(figsize=(10, 6))
+    # # plt.title('rBergomi Asset Paths Hybrid', fontproperties=font, fontsize=14)
+    # # plt.xlabel('Time', fontproperties=font)
+    # # plt.ylabel('Price', fontproperties=font)
+    # # plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
+    # #     horizontalalignment='left',
+    # #     fontproperties=font,
+    # #     verticalalignment='bottom',
+    # #     transform=plt.gca().transAxes)
 
-    # for i in range(model_hybrid.N):
-    #     plt.plot(model_hybrid.t[0], S_hybrid[i], label=f'rBergomi Path{i}')
+    # # for i in range(model_hybrid.N):
+    # #     plt.plot(model_hybrid.t[0], S_hybrid[i], label=f'rBergomi Path{i}')
     
-    # # variance path hybrid
+    # # # variance path hybrid
 
-    # plt.figure(figsize=(10, 6))
-    # plt.title('rBergomi Variance Paths Hybrid', fontproperties=font, fontsize=14)
-    # plt.xlabel('Time', fontproperties=font)
-    # plt.ylabel('Var', fontproperties=font)
-    # plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
-    #     horizontalalignment='left',
-    #     fontproperties=font,
-    #     verticalalignment='bottom',
-    #     transform=plt.gca().transAxes)
+    # # plt.figure(figsize=(10, 6))
+    # # plt.title('rBergomi Variance Paths Hybrid', fontproperties=font, fontsize=14)
+    # # plt.xlabel('Time', fontproperties=font)
+    # # plt.ylabel('Var', fontproperties=font)
+    # # plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
+    # #     horizontalalignment='left',
+    # #     fontproperties=font,
+    # #     verticalalignment='bottom',
+    # #     transform=plt.gca().transAxes)
 
-    # for i in range(model_hybrid.N):
-    #     plt.plot(model_hybrid.t[0], V_hybrid[i], label=f'rBergomi Path{i}')
+    # # for i in range(model_hybrid.N):
+    # #     plt.plot(model_hybrid.t[0], V_hybrid[i], label=f'rBergomi Path{i}')
         
-    # plt.figure(figsize=(10, 6))
-    # plt.title('rBergomi Asset Paths rdonsker', fontproperties=font, fontsize=14)
-    # plt.xlabel('Time', fontproperties=font)
-    # plt.ylabel('Price', fontproperties=font)
-    # plt.text(0.5, 0.95, f'Time taken: {diff_donsker} seconds',
-    #          horizontalalignment='left',
-    #          fontproperties=font,
-    #          verticalalignment='bottom',
-    #          transform=plt.gca().transAxes)
+    # # plt.figure(figsize=(10, 6))
+    # # plt.title('rBergomi Asset Paths rdonsker', fontproperties=font, fontsize=14)
+    # # plt.xlabel('Time', fontproperties=font)
+    # # plt.ylabel('Price', fontproperties=font)
+    # # plt.text(0.5, 0.95, f'Time taken: {diff_donsker} seconds',
+    # #          horizontalalignment='left',
+    # #          fontproperties=font,
+    # #          verticalalignment='bottom',
+    # #          transform=plt.gca().transAxes)
 
-    # for i in range(model_rdonsker.N):
-    #     plt.plot(model_rdonsker.t[0], S_donsker[i], label=f'rBergomi Path{i}')
+    # # for i in range(model_rdonsker.N):
+    # #     plt.plot(model_rdonsker.t[0], S_donsker[i], label=f'rBergomi Path{i}')
     
-    # # variance path donsker
+    # # # variance path donsker
 
-    # plt.figure(figsize=(10, 6))
-    # plt.title('rBergomi Variance Paths rDonsker', fontproperties=font, fontsize=14)
-    # plt.xlabel('Time', fontproperties=font)
-    # plt.ylabel('Var', fontproperties=font)
-    # plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
-    #     horizontalalignment='left',
-    #     fontproperties=font,
-    #     verticalalignment='bottom',
-    #     transform=plt.gca().transAxes)
+    # # plt.figure(figsize=(10, 6))
+    # # plt.title('rBergomi Variance Paths rDonsker', fontproperties=font, fontsize=14)
+    # # plt.xlabel('Time', fontproperties=font)
+    # # plt.ylabel('Var', fontproperties=font)
+    # # plt.text(0.5, 0.95, f'Time taken: {diff_hybrid} seconds', 
+    # #     horizontalalignment='left',
+    # #     fontproperties=font,
+    # #     verticalalignment='bottom',
+    # #     transform=plt.gca().transAxes)
 
-    # for i in range(model_hybrid.N):
-    #     plt.plot(model_hybrid.t[0], V_donsker[i], label=f'rBergomi Path{i}')
+    # # for i in range(model_hybrid.N):
+    # #     plt.plot(model_hybrid.t[0], V_donsker[i], label=f'rBergomi Path{i}')
     
     
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(xi_curve, label='Forward Variance Curve')
-    # plt.title(f'Piecewise Forward Variance Curve, T={model_rdonsker.T}, n={model_rdonsker.n}', fontsize=14, fontproperties=font)
-    # plt.show()
+    # # plt.figure(figsize=(10, 6))
+    # # plt.plot(xi_curve, label='Forward Variance Curve')
+    # # plt.title(f'Piecewise Forward Variance Curve, T={model_rdonsker.T}, n={model_rdonsker.n}', fontsize=14, fontproperties=font)
+    # # plt.show()
 
  
