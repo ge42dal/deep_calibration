@@ -148,9 +148,9 @@ def generate_piecewise_forward_variance(T=1.0, n=100, num_segments=8, xi_pieces=
     xi_curve = np.zeros_like(t_full)
 
     for i in range(num_segments):
-        start = np.searchsorted(t_full, t_grid[i])
-        end = np.searchsorted(t_full, t_grid[i + 1]) if i < num_segments - 1 else len(t_full)
-        xi_curve[start:end] = xi_pieces[i]
+        start = np.searchsorted(t_full, t_grid[i]) # find the index of the segment start
+        end = np.searchsorted(t_full, t_grid[i + 1]) if i < num_segments - 1 else len(t_full) # find the index of the segment end
+        xi_curve[start:end] = xi_pieces[i] # fill segment with piece 
 
     return xi_curve, t_full, xi_pieces
 
