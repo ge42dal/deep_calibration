@@ -1,6 +1,6 @@
 import numpy as np
 import os 
-from utils import g, b, cov, generate_piecewise_forward_variance, generate_rDonsker_Y_optimal, generate_rDonsker_Y_cholesky
+from utils import g, b, cov, generate_piecewise_forward_variance, generate_rDonsker_Y_cholesky, bsinv
 #import matplotlib.pyplot as plt
 #import time
 #from matplotlib.font_manager import FontProperties
@@ -28,7 +28,7 @@ class rBergomi(object):
 
         # Construct hybrid scheme correlation structure for kappa = 1 (for hybrid)
         self.e = np.array([0, 0])
-        self.c = cov(self.a, self.n)
+        self.c = cov(self.a, self.n) 
 
     def dW1(self):
         """
@@ -54,7 +54,7 @@ class rBergomi(object):
             # Construct arrays for convolution
             G = np.zeros(1 + self.s)  # Gamma
             for k in np.arange(2, 1 + self.s, 1):
-                G[k] = g(b(k, self.a)/self.n, self.a)
+                G[k] = g(b(k, self.a) * self.dt, self.a)
 
             X = dW[:, :, 0]  # Xi
 
@@ -171,14 +171,19 @@ class rBergomi(object):
 def simulate_one(args):
     i, method, n_paths, n_steps, T = args
 
+    # Sample model parameters
     xi_pieces = np.random.uniform(0.01, 0.16, 8)
     nu = np.random.uniform(0.5, 4.0)
     rho = np.random.uniform(-0.95, -0.1)
     H = np.random.uniform(0.025, 0.5)
     a = H - 0.5
 
-    xi_curve, _, _ = generate_piecewise_forward_variance(T=T, n=n_steps, num_segments=8, xi_pieces=xi_pieces)
+    # Forward variance curve using utils
+    xi_curve, _, _ = generate_piecewise_forward_variance(
+        T=T, n=n_steps, num_segments=8, xi_pieces=xi_pieces
+    )
 
+    # rBergomi simulation
     model = rBergomi(n=n_steps, N=n_paths, T=T, a=a, method=method)
     dW1 = model.dW1()
     Y = model.Y(dW1)
@@ -187,24 +192,38 @@ def simulate_one(args):
     dB = model.dB(dW1, dW2, rho=rho)
     S = model.S(V, dB)
 
-    # Extract time grid and indices for maturity points
-    target_maturities = [0.1, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.0]
+    # Time/maturity setup
+    maturities = [0.1, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.0]
+    strikes = np.round(np.linspace(0.5, 1.5, 11), 2)
     t_grid = model.t[0]
-    maturity_indices = [np.searchsorted(t_grid, t) for t in target_maturities]
+    maturity_indices = [np.searchsorted(t_grid, t) for t in maturities]
 
-    # Extract mean prices at maturities
-    maturity_values = {f"S_T_{t:.1f}": float(np.mean(S[:, idx])) for t, idx in zip(target_maturities, maturity_indices)}
+    # Output dict
+    results = {}
 
-    return {
-        'params': {'xi': xi_pieces.tolist(), 'nu': nu, 'rho': rho, 'H': H},
-        'S_final_mean': float(np.mean(S[:, -1])),
-        'S_final_std': float(np.std(S[:, -1])),
-        **maturity_values
-    }
+    # Store true model parameters
+    for j, val in enumerate(xi_pieces):
+        results[f'xi_{j}'] = float(val)
+    results.update({'nu': nu, 'rho': rho, 'H': H})
+
+    # Implied vol surface (MC)
+    for t, idx in zip(maturities, maturity_indices):
+        S_T = S[:, idx]
+        F = np.mean(S_T)
+        for K in strikes:
+            call_price = np.mean(np.maximum(S_T - K, 0))
+            try:
+                iv = bsinv(call_price, F, K, t)
+            except Exception:
+                iv = np.nan
+            results[f"iv_T{t:.1f}_K{K:.2f}"] = iv
+
+    return results
+
 
 
     
-def run_simulation_batch(method='hybrid', n_param=50, n_paths=100, n_steps=252, T=2.0, output_dir='results'):
+def run_simulation_batch(method='hybrid', n_param=80000, n_paths=60000, n_steps=252, T=2.0, output_dir='results'):
     import numpy as np
     import pandas as pd
     import os
@@ -236,6 +255,8 @@ if __name__ == "__main__":
     run_simulation_batch(method='rdonsker')
     hybrid_sim = pd.read_parquet('results/simulated_paths_hybrid.parquet')
     rdonsker_sim = pd.read_parquet('results/simulated_paths_rdonsker.parquet')
+    rdonsker_sim.to_csv('results/simulated_paths_rdonsker.csv', index=False)
+    hybrid_sim.to_csv('results/simulated_paths_hybrid.csv', index=False)
 
     print(hybrid_sim.head())
     print(rdonsker_sim.head())
